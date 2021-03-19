@@ -12,6 +12,7 @@ import org.apache.jena.sparql.algebra.OpVisitorBase;
 import org.apache.jena.sparql.algebra.OpWalker;
 import org.apache.jena.sparql.algebra.op.*;
 import org.apache.jena.sparql.core.BasicPattern;
+import org.apache.jena.sparql.core.Var;
 import org.apache.jena.sparql.expr.Expr;
 import org.apache.jena.sparql.expr.ExprAggregator;
 import org.bson.Document;
@@ -163,6 +164,97 @@ public class Storage {
         System.out.println(op);
     }
 
+    public static class DivideVisitor extends OpVisitorBase {
+        private List<Var> neoVars = new ArrayList<>();
+
+        private List<Var> mongoVars = new ArrayList<>();
+
+        private List<Var> subjectVars = new ArrayList<>();
+
+        private Op neoOp;
+
+        private Op mongoOp;
+
+        @Override
+        public void visit(OpBGP opBGP) {
+            BasicPattern neoBasicPattern = new BasicPattern();
+            BasicPattern mongoBasicPattern = new BasicPattern();
+
+            for (Triple triple : opBGP.getPattern()) {
+                subjectVars.add(Var.alloc(triple.getSubject().getName()));
+
+                if(isNeoVar(triple)) {
+                    neoBasicPattern.add(triple);
+                } else {
+                    mongoBasicPattern.add(triple);
+                }
+            }
+
+            neoOp = new OpBGP(neoBasicPattern);
+            mongoOp = new OpBGP(mongoBasicPattern);
+        }
+
+        public Boolean isNeoVar(Triple triple) {
+            return false;
+        }
+
+        public void visit(OpGroup opGroup) {
+            for (Var var : opGroup.getGroupVars().getVars()) {
+                if(subjectVars.contains(var)) {
+                    if(sub)
+                }
+            }
+        }
+
+        @Override
+        public void visit(OpGroup opGroup)
+        {
+            List<ExprAggregator> neo4jList = new ArrayList<>();
+            List<ExprAggregator> mongoList = new ArrayList<>();
+
+            for (ExprAggregator aggregator : opGroup.getAggregators())
+            {
+                if(subjectList.contains(opGroup.getGroupVars().getVars().get(0).toString())) {
+                    if(neoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
+                        neo4jList.add(aggregator);
+                        neoVList.add(aggregator.getVar().toString());
+                    } else if(mongoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
+                        mongoList.add(aggregator);
+                        mongoVList.add(aggregator.getVar().toString());
+                    } else {
+                        neo4jList.add(aggregator);
+                        neoVList.add(aggregator.getVar().toString());
+                        mongoList.add(aggregator);
+                        mongoVList.add(aggregator.getVar().toString());
+                    }
+                } else if(neoVList.contains(opGroup.getGroupVars().getVars().get(0).toString())) {
+                    if(neoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
+                        neo4jList.add(aggregator);
+                        neoVList.add(aggregator.getVar().toString());
+                    } else if(mongoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
+                        //...
+                    } else {
+                        neo4jList.add(aggregator);
+                        neoVList.add(aggregator.getVar().toString());
+                    }
+                } else {
+                    if(neoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
+                        //                        neo4jList.add(aggregator);
+                    } else if(mongoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
+                        mongoList.add(aggregator);
+                        mongoVList.add(aggregator.getVar().toString());
+                    } else {
+                        mongoList.add(aggregator);
+                        mongoVList.add(aggregator.getVar().toString());
+                    }
+                }
+            }
+
+            neo4jOp = new OpGroup(getNeoBGP(), opGroup.getGroupVars(), neo4jList);
+            mongoOp = new OpGroup(getMongoBGP(), opGroup.getGroupVars(), mongoList);
+        }
+    }
+
     public static class Visitor extends OpVisitorBase
     {
         private List<String> subjectList = new ArrayList<>();
@@ -214,6 +306,7 @@ public class Storage {
         @Override
         public void visit(OpGroup opGroup)
         {
+            System.out.println(opGroup.getGroupVars().getVars());
             List<ExprAggregator> neo4jList = new ArrayList<>();
             List<ExprAggregator> mongoList = new ArrayList<>();
 
