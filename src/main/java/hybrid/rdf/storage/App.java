@@ -9,7 +9,7 @@ import org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfigurati
         scanBasePackages = {"hybrid.rdf.storage"},
         exclude = {MongoAutoConfiguration.class, MongoReactiveAutoConfiguration.class}
 )
-public class App  {
+public class  App  {
     public static void main(String[] args)
     {
         SpringApplication.run(App.class, args);
