@@ -2,6 +2,7 @@ package hybrid.rdf.storage;
 
 import com.mongodb.client.MongoCollection;
 import hybrid.rdf.storage.config.Neo4jDataSourceConfig;
+import org.apache.commons.compress.utils.Lists;
 import org.apache.jena.graph.Triple;
 import org.apache.jena.query.*;
 import org.apache.jena.rdf.model.*;
@@ -16,6 +17,8 @@ import org.apache.jena.sparql.core.Var;
 import org.apache.jena.sparql.core.VarExprList;
 import org.apache.jena.sparql.expr.Expr;
 import org.apache.jena.sparql.expr.ExprAggregator;
+import org.apache.jena.sparql.expr.ExprFunction;
+import org.apache.jena.sparql.expr.ExprVar;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -161,16 +164,18 @@ public class Storage {
         query.getDatasetDescription(); // FROM / FROM NAMED bits
         query.getQueryPattern(); // The meat of the query, the WHERE bit...etc etc..
         Op op = Algebra.compile(query); // Get the algebra for th
-        OpWalker.walk(op, new Visitor());
+        OpWalker.walk(op, new DivideVisitor());
         System.out.println(op);
     }
 
     public static class DivideVisitor extends OpVisitorBase {
-        private Set<Var> neoVars = new HashSet<>();
+        private enum VariableAffiliation {
+            MONGO, NEO, BOTH;
+        }
 
-        private Set<Var> mongoVars = new HashSet<>();
+        private final ExtendVarSet neoVars = new ExtendVarSet();
 
-        private List<Var> subjectVars = new ArrayList<>();
+        private final ExtendVarSet mongoVars = new ExtendVarSet();
 
         private Op neoOp;
 
@@ -182,8 +187,6 @@ public class Storage {
             BasicPattern mongoBasicPattern = new BasicPattern();
 
             for (Triple triple : opBGP.getPattern()) {
-                subjectVars.add(Var.alloc(triple.getSubject().getName()));
-
                 if(isNeoTriple(triple)) {
                     neoBasicPattern.add(triple);
                     visit(triple, true);
@@ -201,78 +204,89 @@ public class Storage {
 
         public void visit(Triple triple, Boolean isNeo) {
             if(triple.getSubject().isVariable()) {
-                neoVars.add(Var.alloc(triple.getSubject().toString()));
-                mongoVars.add(Var.alloc(triple.getSubject().toString()));
+                neoVars.add(new ExtendVar(
+                        Var.alloc(triple.getSubject()),
+                        0
+                ));
+                mongoVars.add(new ExtendVar(
+                        Var.alloc(triple.getSubject()),
+                        0
+                ));
             }
 
             if(triple.getPredicate().isVariable()) {
                 if(isNeo) {
-                    neoVars.add(Var.alloc(triple.getPredicate().toString()));
+                    neoVars.add(new ExtendVar(
+                            Var.alloc(triple.getPredicate()),
+                            0
+                    ));
                 } else {
-                    mongoVars.add(Var.alloc(triple.getPredicate().toString()));
+                    mongoVars.add(new ExtendVar(
+                            Var.alloc(triple.getPredicate()),
+                            0
+                    ));
                 }
             }
 
             if(triple.getObject().isVariable()) {
                 if(isNeo) {
-                    neoVars.add(Var.alloc(triple.getObject().toString()));
+                    neoVars.add(new ExtendVar(
+                            Var.alloc(triple.getObject()),
+                            0
+                    ));
                 } else {
-                    mongoVars.add(Var.alloc(triple.getObject().toString()));
+                    mongoVars.add(new ExtendVar(
+                            Var.alloc(triple.getObject()),
+                            0
+                    ));
                 }
             }
         }
 
         public Boolean isNeoTriple(Triple triple) {
-            return false;
+            return triple.getPredicate().toString().equals("http://www.wikidata.org/prop/direct/P238");
         }
-
         public Boolean isMongoTriple(Triple triple) {
-            return false;
+            return triple.getPredicate().toString().equals("http://www.w3.org/2000/01/rdf-schema#label");
         }
 
         @Override
         public void visit(OpGroup opGroup) {
             List<ExprAggregator> neoAggregators = new ArrayList<>();
             List<ExprAggregator> mongoAggregators = new ArrayList<>();
-            List<Var> neoGroupExprVars = new ArrayList<>();
-            List<Var> mongoGroupExprVars = new ArrayList<>();
+            List<ExtendVar> neoGroupExprVars = new ArrayList<>();
+            List<ExtendVar> mongoGroupExprVars = new ArrayList<>();
 
             for (ExprAggregator aggregator : opGroup.getAggregators()) {
                 if(isAggVarFromNeo(aggregator)) {
                     neoAggregators.add(aggregator);
-                    neoGroupExprVars.add(aggregator.getVar());
-                } else {
+                    neoGroupExprVars.add(new ExtendVar(aggregator.getVar(), 1));
+                }
+
+                if(isAggVarFromMongo(aggregator)) {
                     mongoAggregators.add(aggregator);
-                    mongoGroupExprVars.add(aggregator.getVar());
+                    mongoGroupExprVars.add(new ExtendVar(aggregator.getVar(), 1));
                 }
             }
 
-            int i = 0;
-            String lastVarBelong = getVarBelongsTo(opGroup.getGroupVars().getVars().get(0));
-            String currentBelong = lastVarBelong;
             List<Var> neoGroupVars = new ArrayList<>();
             List<Var> mongoGroupVars = new ArrayList<>();
-            while(Objects.equals(lastVarBelong, currentBelong)) {
-                Var var = opGroup.getGroupVars().getVars().get(i);
-                currentBelong = getVarBelongsTo(var);
+            Var lastVar = opGroup.getGroupVars().getVars().get(0);
+            for (Var var : opGroup.getGroupVars().getVars())
+            {
+                if(isVarFromNeo(var)) {
+                    neoGroupVars.add(var);
+                }
 
-                if(!currentBelong.equals(lastVarBelong)) {
+                if(isVarFromMongo(var)) {
+                    mongoGroupVars.add(var);
+                }
+
+                if(isVarCompatibleConsiderOrder(lastVar, var)) {
+                    lastVar = var;
+                } else {
                     break;
                 }
-
-                if(neoVars.contains(var) && mongoVars.contains(var)) {
-                    neoGroupVars.add(var);
-                    mongoGroupVars.add(var);
-                    currentBelong = "both";
-                } else if(neoVars.contains(var)) {
-                    neoGroupVars.add(var);
-                    currentBelong = "neo";
-                } else {
-                    mongoGroupVars.add(var);
-                    currentBelong = "mongo";
-                }
-
-                i++;
             }
 
             if(!neoGroupVars.isEmpty()) {
@@ -286,31 +300,43 @@ public class Storage {
             }
         }
 
-        public String getVarBelongsTo(Var var) {
-            if(neoVars.contains(var) && mongoVars.contains(var)) {
-                return "both";
-            } else if(neoVars.contains(var)) {
-                return "neo";
-            } else {
-                return "mongo";
-            }
-        }
-
         public Boolean isAggVarFromNeo(ExprAggregator exprAggregator) {
             return neoVars.contains(exprAggregator.getAggregator().getExprList().get(0).asVar());
         }
 
+        public Boolean isAggVarFromMongo(ExprAggregator exprAggregator) {
+            return mongoVars.contains(exprAggregator.getAggregator().getExprList().get(0).asVar());
+        }
+
+        public Boolean isVarFromNeo(Var var) {
+            return neoVars.contains(var);
+        }
+
+        public Boolean isVarFromMongo(Var var) {
+            return mongoVars.contains(var);
+        }
+
         @Override
         public void visit(OpExtend opExtend) {
-            Var exprVar = Var.alloc(opExtend.getVarExprList().getExprs().values().toArray()[0].toString());
-            if(neoVars.contains(exprVar)) {
-                neoOp = OpExtend.create(neoOp, opExtend.getVarExprList());
-                neoVars.add(opExtend.getVarExprList().getVars().get(0));
+            Iterator<Expr> iterator = opExtend.getVarExprList().getExprs().values().iterator();
+
+            List<Expr> exprList = new ArrayList<>();
+            while (iterator.hasNext()) {
+                exprList.add(iterator.next());
             }
 
-            if(mongoVars.contains(exprVar)) {
+            if(VariableAffiliation.BOTH.equals(getArgsVarAffiliation(exprList))) {
+                neoOp = OpExtend.create(neoOp, opExtend.getVarExprList());
+                neoVars.add(new ExtendVar(opExtend.getVarExprList().getVars().get(0), 2));
+
                 mongoOp = OpExtend.create(mongoOp, opExtend.getVarExprList());
-                mongoVars.add(opExtend.getVarExprList().getVars().get(0));
+                mongoVars.add(new ExtendVar(opExtend.getVarExprList().getVars().get(0), 2));
+            } else if(VariableAffiliation.NEO.equals(getArgsVarAffiliation(exprList))) {
+                neoOp = OpExtend.create(neoOp, opExtend.getVarExprList());
+                neoVars.add(new ExtendVar(opExtend.getVarExprList().getVars().get(0), 2));
+            } else if(VariableAffiliation.MONGO.equals(getArgsVarAffiliation(exprList))) {
+                mongoOp = OpExtend.create(mongoOp, opExtend.getVarExprList());
+                mongoVars.add(new ExtendVar(opExtend.getVarExprList().getVars().get(0), 2));
             }
         }
 
@@ -318,182 +344,191 @@ public class Storage {
         public void visit(OpFilter opFilter) {
             for (Expr expr : opFilter.getExprs())
             {
-                if(neoVars.contains(expr.getFunction().getArgs().get(0))) {
+                if(VariableAffiliation.BOTH.equals(getArgsVarAffiliation(expr.getFunction().getArgs()))) {
+                    neoOp = OpFilter.filter(expr, neoOp);
+                    mongoOp = OpFilter.filter(expr, mongoOp);
+                    continue;
+                }
+
+                if(VariableAffiliation.NEO.equals(getArgsVarAffiliation(expr.getFunction().getArgs()))) {
                     neoOp = OpFilter.filter(expr, neoOp);
                 }
 
-                if(mongoVars.contains(expr.getFunction().getArgs().get(0))) {
+                if(VariableAffiliation.MONGO.equals(getArgsVarAffiliation(expr.getFunction().getArgs()))) {
                     mongoOp = OpFilter.filter(expr, mongoOp);
                 }
             }
         }
 
-        public void visit(OpOrder opOrder) {
-//            opOrder.getConditions().
+        public void visit(OpOrder opOrder) {}
+
+        public void visit(OpProject opProject) {
+            neoOp = new OpProject(neoOp, neoVars.getLastLevelVars());
+            mongoOp = new OpProject(mongoOp, mongoVars.getLastLevelVars());
+
+            System.out.println(neoOp);
+            System.out.println(mongoOp);
+        }
+
+        public VariableAffiliation getAffiliation(Var var) {
+            if(neoVars.contains(var) && mongoVars.contains(var)) {
+                return VariableAffiliation.BOTH;
+            }
+
+            if(neoVars.contains(var)) {
+                return VariableAffiliation.NEO;
+            }
+
+            if(mongoVars.contains(var)) {
+                return VariableAffiliation.MONGO;
+            }
+
+            return null;
+        }
+
+        public Boolean isVarCompatibleConsiderOrder(Var var1, Var var2) {
+            if(
+                    (getAffiliation(var1) == null || getAffiliation(var2) == null)
+                            || (var1 == null || var2 == null)
+                            || (!var1.isVariable() || !var2.isVariable())
+            ) {
+                return false;
+            }
+
+            if(getAffiliation(var1).equals(VariableAffiliation.BOTH)) {
+                return true;
+            }
+
+            if(getAffiliation(var1).equals(getAffiliation(var2))) {
+                return true;
+            }
+
+            return false;
+        }
+
+        public VariableAffiliation getArgsVarAffiliation(List<Expr> vars) {
+            Expr lastVar = vars.get(0);
+            VariableAffiliation affiliation = getAffiliation(lastVar.asVar());
+
+            for (Expr var : vars) {
+                if(isVarCompatibleConsiderOrder(lastVar.asVar(), var.asVar())) {
+                    lastVar = var;
+                    if(affiliation.equals(VariableAffiliation.BOTH)) {
+                        affiliation = getAffiliation(var.asVar());
+                    }
+                } else {
+                    affiliation = null;
+                    break;
+                }
+            }
+
+            return affiliation;
         }
     }
 
-    public static class Visitor extends OpVisitorBase
-    {
-        private List<String> subjectList = new ArrayList<>();
-        private List<String> neoVList = new ArrayList<>();
-        private List<String> mongoVList = new ArrayList<>();
+    public static class ExtendVar {
+        private final Var var;
 
-        private List<Triple> neoTripleList = new ArrayList<>();
-        private List<Triple> mongoTripleList = new ArrayList<>();
-        private OpBGP neoBGP;
-        private OpBGP mongoBGP;
-        private Op neo4jOp;
-        private Op mongoOp;
-        private OpExtend neo4jExtend;
-        private OpExtend mongoExtend;
+        private final Integer level;
 
-        @Override
-        public void visit(OpProject opProject)
-        {
-//            System.out.println("opProject");
-//            System.out.println(opProject.getVars());
+        private final List<ExtendVar> subVars;
+
+        public ExtendVar(Var var, int level, ExtendVar...extendVars) {
+            this.var = var;
+            this.level = level;
+            subVars = Arrays.asList(extendVars);
         }
 
         @Override
-        public void visit(OpFilter opFilter)
+        public boolean equals(Object o)
         {
-            for (Expr expr : opFilter.getExprs())
-            {
-                if(neoVList.contains(expr.getFunction().getArgs().get(0).toString())) {
-                    neo4jOp = OpFilter.filter(expr, neo4jOp);
-                } else if(mongoVList.contains(expr.getFunction().getArgs().get(0).toString())) {
-                    mongoOp = OpFilter.filter(expr, mongoOp);
+            if (this == o)
+                return true;
+            if (o == null || getClass() != o.getClass())
+                return false;
+            ExtendVar extendVar = (ExtendVar) o;
+            return Objects.equals(var, extendVar.var) &&
+                    Objects.equals(level, extendVar.level) &&
+                    Objects.equals(subVars, extendVar.subVars);
+        }
+
+        @Override
+        public int hashCode()
+        {
+            return Objects.hash(var, level, subVars);
+        }
+
+        @Override
+        public String toString()
+        {
+            return "ExtendVar{" +
+                    "var=" + var +
+                    ", level=" + level +
+                    '}';
+        }
+    }
+
+    public static class ExtendVarSet {
+        private final Set<ExtendVar> extendVars = new HashSet<>();
+
+        private final Set<Var> vars = new HashSet<>();
+
+        private Integer maxLevel = 0;
+
+        public ExtendVarSet() {}
+
+        public void add(ExtendVar extendVar) {
+            extendVars.add(extendVar);
+            vars.add(extendVar.var);
+            if(extendVar.level > maxLevel) {
+                maxLevel = extendVar.level;
+            }
+        }
+
+        public boolean contains(ExtendVar extendVar) {
+            return vars.contains(extendVar.var);
+        }
+
+        public boolean contains(Var var) {
+            return vars.contains(var);
+        }
+
+        public List<ExtendVar> getLastLevelExtendVars() {
+            List<ExtendVar> extendVarList = new ArrayList<>();
+
+            for (ExtendVar extendVar : extendVars) {
+                if(extendVar.level.equals(maxLevel)) {
+                    extendVarList.add(extendVar);
                 }
+            }
+
+            return extendVarList;
+        }
+
+        public List<Var> getLastLevelVars() {
+            List<Var> varList = new ArrayList<>();
+
+            for (ExtendVar extendVar : extendVars) {
+                if(extendVar.level.equals(maxLevel)) {
+                    varList.add(extendVar.var);
+                }
+            }
+
+            return varList;
+        }
+
+        public void addAll(List<ExtendVar> vs) {
+            for (ExtendVar var : vs) {
+                add(var);
             }
         }
 
         @Override
-        public void visit(OpExtend opExtend)
+        public String toString()
         {
-            if(mongoVList.contains(opExtend.getVarExprList().getExprs().values().toArray()[0].toString())) {
-                mongoOp = OpExtend.create(mongoOp, opExtend.getVarExprList());
-            }
-            else if(neoVList.contains(opExtend.getVarExprList().getExprs().values().toArray()[0].toString())) {
-                neo4jOp = OpExtend.create(neo4jOp, opExtend.getVarExprList());
-            }
-        }
-
-        public void visit(OpOrder opOrder) {
-            System.out.println(opOrder.getConditions().get(0).getExpression());
-        }
-
-        @Override
-        public void visit(OpGroup opGroup)
-        {
-            List<ExprAggregator> neo4jList = new ArrayList<>();
-            List<ExprAggregator> mongoList = new ArrayList<>();
-
-            for (ExprAggregator aggregator : opGroup.getAggregators())
-            {
-                if(subjectList.contains(opGroup.getGroupVars().getVars().get(0).toString())) {
-                    if(neoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
-                        neo4jList.add(aggregator);
-                        neoVList.add(aggregator.getVar().toString());
-                    } else if(mongoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
-                        mongoList.add(aggregator);
-                        mongoVList.add(aggregator.getVar().toString());
-                    } else {
-                        neo4jList.add(aggregator);
-                        neoVList.add(aggregator.getVar().toString());
-                        mongoList.add(aggregator);
-                        mongoVList.add(aggregator.getVar().toString());
-                    }
-                } else if(neoVList.contains(opGroup.getGroupVars().getVars().get(0).toString())) {
-                    if(neoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
-                        neo4jList.add(aggregator);
-                        neoVList.add(aggregator.getVar().toString());
-                    } else if(mongoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
-                        //...
-                    } else {
-                        neo4jList.add(aggregator);
-                        neoVList.add(aggregator.getVar().toString());
-                    }
-                } else {
-                    if(neoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
-//                        neo4jList.add(aggregator);
-                    } else if(mongoVList.contains(aggregator.getAggregator().getExprList().get(0).toString())) {
-                        mongoList.add(aggregator);
-                        mongoVList.add(aggregator.getVar().toString());
-                    } else {
-                        mongoList.add(aggregator);
-                        mongoVList.add(aggregator.getVar().toString());
-                    }
-                }
-            }
-
-            neo4jOp = new OpGroup(getNeoBGP(), opGroup.getGroupVars(), neo4jList);
-            mongoOp = new OpGroup(getMongoBGP(), opGroup.getGroupVars(), mongoList);
-        }
-
-        @Override
-        public void visit(OpBGP opBGP)
-        {
-            for (Triple triple : opBGP.getPattern()) {
-                visit(triple);
-            }
-        }
-
-        public void visit(Triple triple)
-        {
-            subjectList.add(triple.getSubject().toString());
-            if(triple.getPredicate().toString().equals("http://www.wikidata.org/prop/direct/P238")) {
-                if(triple.getObject().isVariable()) {
-                    neoTripleList.add(triple);
-                    if(triple.getObject().isVariable()) {
-                        neoVList.add(triple.getObject().toString());
-                    }
-                }
-            } else if(triple.getPredicate().toString().equals("http://www.w3.org/2000/01/rdf-schema#label")) {
-                if(triple.getObject().isVariable()) {
-                    mongoTripleList.add(triple);
-                    mongoVList.add(triple.getObject().toString());
-                }
-            }
-        }
-
-        public void visit(OpJoin opJoin)
-        {
-//            System.out.println(opJoin.getLeft().getClass());
-//            System.out.println(opJoin.getRight());
-        }
-
-        public void visit(OpService opService)
-        {
-//            System.out.println("opService");
-//            System.out.println(opService);
-//            System.out.println(opService.getService());
-//            System.out.println(opService.getServiceElement());
-//            System.out.println(opService.getSilent());
-        }
-
-        public OpBGP getNeoBGP() {
-            if(neoBGP == null) {
-                BasicPattern basicPattern = new BasicPattern();
-                for (Triple triple : neoTripleList) {
-                    basicPattern.add(triple);
-                }
-                neoBGP = new OpBGP(basicPattern);
-            }
-
-            return neoBGP;
-        }
-
-        public OpBGP getMongoBGP() {
-            if(mongoBGP == null) {
-                BasicPattern basicPattern = new BasicPattern();
-                for (Triple triple : mongoTripleList) {
-                    basicPattern.add(triple);
-                }
-                mongoBGP = new OpBGP(basicPattern);
-            }
-
-            return mongoBGP;
+            return "ExtendVarSet{" +
+                    "extendVars=" + extendVars +
+                    '}';
         }
     }
 
