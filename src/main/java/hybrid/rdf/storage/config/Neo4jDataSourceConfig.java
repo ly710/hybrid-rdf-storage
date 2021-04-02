@@ -10,7 +10,7 @@ import org.springframework.stereotype.Service;
 public class Neo4jDataSourceConfig {
     @Bean
     public CypherExecutor getCypherExecutor() {
-        Driver driver = GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("neo4j", "123456"));
+        Driver driver = GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("neo4j", "1"));
         return new CypherExecutor(driver);
     }
 

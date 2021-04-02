@@ -1,8 +1,11 @@
 package hybrid.rdf.storage;
 
 import com.mongodb.client.MongoCollection;
+import com.steelbridgelabs.oss.neo4j.structure.Neo4JElementIdProvider;
+import com.steelbridgelabs.oss.neo4j.structure.Neo4JGraph;
+import com.steelbridgelabs.oss.neo4j.structure.providers.Neo4JNativeElementIdProvider;
 import hybrid.rdf.storage.config.Neo4jDataSourceConfig;
-import org.apache.commons.compress.utils.Lists;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.jena.graph.Triple;
 import org.apache.jena.query.*;
 import org.apache.jena.rdf.model.*;
@@ -17,9 +20,15 @@ import org.apache.jena.sparql.core.Var;
 import org.apache.jena.sparql.core.VarExprList;
 import org.apache.jena.sparql.expr.Expr;
 import org.apache.jena.sparql.expr.ExprAggregator;
-import org.apache.jena.sparql.expr.ExprFunction;
-import org.apache.jena.sparql.expr.ExprVar;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
+import org.apache.tinkerpop.gremlin.sparql.SparqlToGremlinCompiler;
+import org.apache.tinkerpop.gremlin.structure.Graph;
+import org.apache.tinkerpop.gremlin.structure.Transaction;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.bson.Document;
+import org.neo4j.driver.AuthTokens;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.GraphDatabase;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,6 +51,27 @@ public class Storage {
         this.mongoCollection = mongoCollection;
     }
 
+    public static String escapeQueryChars(String s) {
+        if (StringUtils.isBlank(s)) {
+            return s;
+        }
+        StringBuilder sb = new StringBuilder();
+        //查询字符串一般不会太长，挨个遍历也花费不了多少时间
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            // These characters are part of the query syntax and must be escaped
+            if (c == '\\' || c == '+' || c == '-' || c == '!' || c == '(' || c == ')'
+                    || c == ':' || c == '^'	|| c == '[' || c == ']' || c == '\"'
+                    || c == '{' || c == '}' || c == '~' || c == '*' || c == '?'
+                    || c == '|' || c == '&' || c == ';' || c == '/' || c == '.'
+                    || c == '$' || Character.isWhitespace(c)) {
+                sb.append('\\');
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
     @GetMapping("/store")
     public void store(String path) {
         Model model = getModelFromPath("file:/home/ly/下载/politicianbill.owl");
@@ -58,27 +88,28 @@ public class Storage {
             //此处应注意!和java中Object要区分
             RDFNode object = stmt.getObject();// 获得客体!
 
-            System.out.println(subject.toString() + " " + predicate.toString() + " " + object.toString());
+//            System.out.println(subject.toString() + " " + predicate.toString() + " " + object.toString());
 
             if (object instanceof Resource) {
-//                try {
-//                    cypherExecutor.execute(
-//                            "CREATE p = (" + subject.getLocalName() + ") -[:" + predicate.getLocalName() + "]->" + "(" + ((Resource) object).getLocalName() + ")"
-//                    );
-//                } catch (Exception e) {
-//                    e.printStackTrace();
-//                }
+                try {
+                    String objectUri = ((Resource) object).getURI();
+                    cypherExecutor.execute(
+                            "CREATE p = ({name: '" + subject.getURI() + "'}) -[:`" + predicate.getURI() + "`]->" + "({name:'" + objectUri + "'})"
+                    );
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             } else {
-//                if(rdfPropertyMaps.get(subject) == null) {
-//                    Document document = new Document("@id", subject.getURI());
-//                    rdfPropertyMaps.put(subject, document);
-//                }
-//
-//                Document document = new Document();
-//                document.append("subject", subject.getURI());
-//                document.append("predict", predicate.getURI());
-//                document.append("object", object.toString());
-//                documents.add(document);
+                if(rdfPropertyMaps.get(subject) == null) {
+                    Document document = new Document("@id", subject.getURI());
+                    rdfPropertyMaps.put(subject, document);
+                }
+
+                Document document = new Document();
+                document.append("subject", subject.getURI());
+                document.append("predict", predicate.getURI());
+                document.append("object", object.toString());
+                documents.add(document);
             }
         }
 
@@ -109,6 +140,38 @@ public class Storage {
 //            System.out.println(r);
 //            Literal l = soln.getLiteral("s");
 //            System.out.println(l);
+        }
+    }
+
+    @GetMapping("/query-neo4j")
+    public void queryNeo4j() {
+        Driver driver = GraphDatabase.driver("bolt://localhost", AuthTokens.basic("neo4j", "1"));
+        Neo4JElementIdProvider<Long> provider = new Neo4JNativeElementIdProvider();
+
+        try
+        {
+            Graph graph = new Neo4JGraph(driver, "neo4j", provider, provider);
+            Transaction transaction = graph.tx();
+
+            String sparql = "PREFIX house: <http://www.house.gov/members#>\n" +
+                    "PREFIX pb: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>" +
+//                    "select ?s ?o where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e:http:\\/\\/swat\\.cse\\.lehigh\\.edu\\/resources\\/onto\\/politicianbill.owl\\#sponsoredBill ?o .}";
+                    "select ?s ?o where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e ?o .}";
+//                    "select ?s where { ?s p:name e:P000422 . ?s e:house:}";
+            GraphTraversal<Vertex, ?> graphTraversal = SparqlToGremlinCompiler.compile(graph, sparql);
+
+            while (graphTraversal.hasNext())
+            {
+                System.out.println(graphTraversal.next());
+                graphTraversal.next();
+            }
+
+            graphTraversal.close();
+            transaction.commit();
+            graph.close();
+            driver.close();
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -289,12 +352,18 @@ public class Storage {
                 }
             }
 
-            if(!neoGroupVars.isEmpty()) {
+
+            List<Var> nonJoinVars = new ArrayList<>(neoVars.vars);
+            nonJoinVars.removeAll(new ArrayList<>(mongoVars.vars));
+            List<Var> joinVars = new ArrayList<>(neoVars.vars);
+            joinVars.removeAll(nonJoinVars);
+
+            if(!neoGroupVars.isEmpty() && joinVars.containsAll(neoGroupVars)) {
                 neoOp = new OpGroup(neoOp, new VarExprList(neoGroupVars), neoAggregators);
                 neoVars.addAll(neoGroupExprVars);
             }
 
-            if(!mongoGroupVars.isEmpty()) {
+            if(!mongoGroupVars.isEmpty() && joinVars.containsAll(mongoGroupVars)) {
                 mongoOp = new OpGroup(mongoOp, new VarExprList(mongoGroupVars), mongoAggregators);
                 mongoVars.addAll(mongoGroupExprVars);
             }
