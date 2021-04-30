@@ -3,10 +3,8 @@ package hybrid.rdf.storage.config;
 import org.neo4j.driver.*;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.stereotype.Service;
 
 @Configuration
-@Service
 public class Neo4jDataSourceConfig {
     @Bean
     public CypherExecutor getCypherExecutor() {

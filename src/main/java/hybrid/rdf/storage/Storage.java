@@ -3,6 +3,7 @@ package hybrid.rdf.storage;
 import com.mongodb.client.MongoCollection;
 import com.steelbridgelabs.oss.neo4j.structure.Neo4JElementIdProvider;
 import com.steelbridgelabs.oss.neo4j.structure.Neo4JGraph;
+import com.steelbridgelabs.oss.neo4j.structure.Neo4JVertex;
 import com.steelbridgelabs.oss.neo4j.structure.providers.Neo4JNativeElementIdProvider;
 import hybrid.rdf.storage.config.Neo4jDataSourceConfig;
 import org.apache.commons.lang3.StringUtils;
@@ -42,13 +43,17 @@ public class Storage {
 
     private final MongoCollection<Document> mongoCollection;
 
+    private final Neo4jClient neo4jClient;
+
     @Autowired
     public Storage(
             Neo4jDataSourceConfig.CypherExecutor cypherExecutor,
-            MongoCollection<Document> mongoCollection
+            MongoCollection<Document> mongoCollection,
+            Neo4jClient neo4jClient
     ) {
         this.cypherExecutor = cypherExecutor;
         this.mongoCollection = mongoCollection;
+        this.neo4jClient = neo4jClient;
     }
 
     public static String escapeQueryChars(String s) {
@@ -155,15 +160,21 @@ public class Storage {
 
             String sparql = "PREFIX house: <http://www.house.gov/members#>\n" +
                     "PREFIX pb: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>" +
-//                    "select ?s ?o where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e:http:\\/\\/swat\\.cse\\.lehigh\\.edu\\/resources\\/onto\\/politicianbill.owl\\#sponsoredBill ?o .}";
-                    "select ?s ?o where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e ?o .}";
+                    "select (count(?s) as ?ss) where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e:http:\\/\\/swat\\.cse\\.lehigh\\.edu\\/resources\\/onto\\/politicianbill.owl\\#sponsoredBill ?o .} group by ?s";
+
+            System.out.println(sparql);
+//                    "select ?s ?o where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e ?o .}";
 //                    "select ?s where { ?s p:name e:P000422 . ?s e:house:}";
             GraphTraversal<Vertex, ?> graphTraversal = SparqlToGremlinCompiler.compile(graph, sparql);
 
             while (graphTraversal.hasNext())
             {
                 System.out.println(graphTraversal.next());
-                graphTraversal.next();
+                HashMap<String, Neo4JVertex> vertex = (HashMap<String, Neo4JVertex>) graphTraversal.next();
+                System.out.println(vertex.get("s").property("name").value());
+//                System.out.println(vertex.get("o").property("name").value());
+//                System.out.println(graphTraversal.next().getClass());
+//                graphTraversal.next();
             }
 
             graphTraversal.close();
@@ -173,6 +184,17 @@ public class Storage {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    @GetMapping("/query-neo4j-gremlin")
+    public void sparqlGremlinTest() {
+        Query query = QueryFactory.create("select ?o where {<aaa> <bbb> ?o}");
+        Op op = Algebra.compile(query);
+
+        neo4jClient.find(op);
+
+//        System.out.println((OpProject)divideVisitor.getNeoOp());
+//        System.out.println(op);
     }
 
 //    @GetMapping("/parse")
@@ -227,8 +249,12 @@ public class Storage {
         query.getDatasetDescription(); // FROM / FROM NAMED bits
         query.getQueryPattern(); // The meat of the query, the WHERE bit...etc etc..
         Op op = Algebra.compile(query); // Get the algebra for th
-        OpWalker.walk(op, new DivideVisitor());
-        System.out.println(op);
+        DivideVisitor divideVisitor = new DivideVisitor();
+        OpWalker.walk(op, divideVisitor);
+//        OpExecutor
+
+//        System.out.println((OpProject)divideVisitor.getNeoOp());
+//        System.out.println(op);
     }
 
     public static class DivideVisitor extends OpVisitorBase {
@@ -309,6 +335,7 @@ public class Storage {
         public Boolean isNeoTriple(Triple triple) {
             return triple.getPredicate().toString().equals("http://www.wikidata.org/prop/direct/P238");
         }
+
         public Boolean isMongoTriple(Triple triple) {
             return triple.getPredicate().toString().equals("http://www.w3.org/2000/01/rdf-schema#label");
         }
@@ -435,8 +462,8 @@ public class Storage {
             neoOp = new OpProject(neoOp, neoVars.getLastLevelVars());
             mongoOp = new OpProject(mongoOp, mongoVars.getLastLevelVars());
 
-            System.out.println(neoOp);
-            System.out.println(mongoOp);
+//            System.out.println(neoOp);
+//            System.out.println(mongoOp);
         }
 
         public VariableAffiliation getAffiliation(Var var) {
@@ -492,6 +519,22 @@ public class Storage {
             }
 
             return affiliation;
+        }
+
+        public Op getNeoOp() {
+            return neoOp;
+        }
+
+        public void setNeoOp(Op neoOp) {
+            this.neoOp = neoOp;
+        }
+
+        public Op getMongoOp() {
+            return mongoOp;
+        }
+
+        public void setMongoOp(Op mongoOp) {
+            this.mongoOp = mongoOp;
         }
     }
 
