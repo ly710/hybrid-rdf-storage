@@ -57,4 +57,16 @@ dependencies {
     compile("org.apache.tinkerpop:gremlin-driver:3.4.10")
     compile("com.steelbridgelabs.oss:neo4j-gremlin-bolt:0.4.6")
     compile("org.apache.tinkerpop:sparql-gremlin:3.4.10")
+
+    compile("io.github.openfeign:feign-core:11.0")
+    compile("io.github.openfeign.form:feign-form:3.8.0")
+
+    compile('org.mybatis.spring.boot:mybatis-spring-boot-starter:2.1.2')
+    compile('mysql:mysql-connector-java:8.0.20')
+    compile("org.springframework.boot:spring-boot-starter-data-jpa")
+
+    compile("org.codelibs:minhash:0.3.0")
+    implementation group: 'info.debatty', name: 'java-lsh', version: '0.12'
+
+    compile('redis.clients:jedis:3.6.0')
 }

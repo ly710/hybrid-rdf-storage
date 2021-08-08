@@ -1,12 +1,6 @@
-package hybrid.rdf.storage;
+package hybrid.rdf.storage.client;
 
-import com.steelbridgelabs.oss.neo4j.structure.Neo4JVertex;
-import groovy.json.StringEscapeUtils;
-import lombok.Data;
-import org.apache.jena.datatypes.DatatypeFormatException;
-import org.apache.jena.datatypes.RDFDatatype;
 import org.apache.jena.graph.*;
-import org.apache.jena.graph.impl.LiteralLabel;
 import org.apache.jena.query.Query;
 import org.apache.jena.sparql.algebra.Op;
 import org.apache.jena.sparql.algebra.OpAsQuery;
@@ -30,13 +24,14 @@ public class Neo4jClient {
         this.graph = graph;
     }
 
-    public ResultMappings find(Op op) {
+    public ResultList find(Op op) {
         Op sparGremlinOp = Transformer.transform(new OpTransfer(), op);
         Query q = OpAsQuery.asQuery(sparGremlinOp);
         q.setQuerySelectType();
-        String sparql = q.serialize();
-
-        System.out.println(sparql);
+        String sparql = q.serialize()
+                .replace("<", "")
+                .replace(">", "")
+                .replace("\\\\", "\\");
 
         GraphTraversal<Vertex, ?> graphTraversal = SparqlToGremlinCompiler.compile(graph, sparql);
 
@@ -47,7 +42,7 @@ public class Neo4jClient {
 
         sparqlGremlinGraphTraverser.traverse();
 
-        ResultMappings resultMappings = sparqlGremlinGraphTraverser.getMappings();
+        ResultList resultMappings = sparqlGremlinGraphTraverser.getMappingList();
 
         try {
             graphTraversal.close();
@@ -59,14 +54,12 @@ public class Neo4jClient {
         return resultMappings;
     }
 
-    private static class ResultMappings extends ArrayList<Map<String, String>> {}
-
     private static class SparqlGremlinGraphTraverser {
         private final GraphTraversal<Vertex, ?> graphTraversal;
 
-        private final ResultMappings mappings = new ResultMappings();
+        private final ResultList mappingList = new ResultList();
 
-        private List<String> vars = new ArrayList<>();
+        private List<String> vars;
 
         public SparqlGremlinGraphTraverser(
                 GraphTraversal<Vertex, ?> graphTraversal,
@@ -78,18 +71,13 @@ public class Neo4jClient {
 
         public void traverse() {
             while (graphTraversal.hasNext()) {
-                HashMap<String, Neo4JVertex> vertex = (HashMap<String, Neo4JVertex>) graphTraversal.next();
-                Map<String, String> mapping = new HashMap<>();
-                for (String var : vars) {
-                    mapping.put(var, vertex.get(var).property("name").value().toString());
-                }
-
-                mappings.add(mapping);
+                ResultList.Mappings mappings = new ResultList.Mappings(vars, graphTraversal.next());
+                mappingList.add(mappings.getMappings());
             }
         }
 
-        public ResultMappings getMappings() {
-            return mappings;
+        public ResultList getMappingList() {
+            return mappingList;
         }
     }
 
@@ -175,8 +163,6 @@ public class Neo4jClient {
             opBGP.getPattern().addAll(sparqlGremlinQueryPattern);
 
             return opBGP;
-//
-//            return new OpBGP(sparqlGremlinQueryPattern);
         }
 
         private String getSparqlGremlinSubjectVar(int n) {
@@ -205,117 +191,15 @@ public class Neo4jClient {
         }
 
         private Node getSparqlGremlinEdgeNode(String edge) {
-            String sparql = "PREFIX house: <http://www.house.gov/members#>\n" +
-                    "PREFIX pb: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>" +
-                    "select (count(?s) as ?ss) where { ?s v:name \"http://www.house.gov/members#P000422\" . ?s e:http:\\/\\/swat\\.cse\\.lehigh\\.edu\\/resources\\/onto\\/politicianbill.owl\\#sponsoredBill ?o .} group by ?s";
-
-            String a = "a/aa";
-            System.out.println(a);
-            System.out.println(StringEscapeUtils.escapeJavaScript(StringEscapeUtils.escapeJavaScript(a)));
-            System.out.println(StringEscapeUtils.escapeJava(a));
-            System.out.println(sparql);
-            System.out.println("e:" + edge);
-            System.out.println("e:" + escapeEdgeLiteral(escapeEdgeLiteral(edge)));
-            return NodeFactory.createLiteral(escapeEdgeLiteral("e:" + edge));
+            return NodeFactory.createURI(escapeEdgeLiteral("e:" + edge));
         }
 
         private String escapeEdgeLiteral(String s) {
-            return StringEscapeUtils.escapeJavaScript(s).replace("#", "\\#");
+            return s.replace("/", "\\/").replace("#", "\\#");
         }
 
         private String quoteEntity(String s) {
             return "\"" + s + "\"";
-        }
-    }
-
-    @Data
-    private static class QueryPatternParser {
-        private List<String> vars = new ArrayList<>();
-
-        private BasicPattern sparqlGremlinQueryPattern = new BasicPattern();
-
-        public QueryPatternParser(BasicPattern originPattern) {
-        }
-
-        private String getSparqlGremlinSparql() {
-            String sparql = "select " + String.join(",", vars) + " where \n";
-            List<String> patternStringList = new ArrayList<>();
-
-            for (Triple triple : sparqlGremlinQueryPattern) {
-                patternStringList.add(triple.getSubject().toString() + " " + triple.getPredicate().toString() + " " + triple.getObject().toString());
-            }
-
-            sparql += String.join(".", patternStringList);
-
-            return sparql;
-        }
-    }
-
-    private static class Literal implements LiteralLabel {
-        private String s;
-
-        public Literal(String s) {
-            this.s = s;
-        }
-
-        @Override
-        public boolean isXML() {
-            return false;
-        }
-
-        @Override
-        public boolean isWellFormed() {
-            return false;
-        }
-
-        @Override
-        public boolean isWellFormedRaw() {
-            return false;
-        }
-
-        @Override
-        public String toString(boolean b) {
-            return null;
-        }
-
-        @Override
-        public String getLexicalForm() {
-            return null;
-        }
-
-        @Override
-        public Object getIndexingValue() {
-            return null;
-        }
-
-        @Override
-        public String language() {
-            return null;
-        }
-
-        @Override
-        public Object getValue() throws DatatypeFormatException {
-            return s;
-        }
-
-        @Override
-        public RDFDatatype getDatatype() {
-            return null;
-        }
-
-        @Override
-        public String getDatatypeURI() {
-            return null;
-        }
-
-        @Override
-        public boolean sameValueAs(LiteralLabel literalLabel) {
-            return false;
-        }
-
-        @Override
-        public int getDefaultHashcode() {
-            return 0;
         }
     }
 }

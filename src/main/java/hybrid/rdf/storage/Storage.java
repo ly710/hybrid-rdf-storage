@@ -5,11 +5,21 @@ import com.steelbridgelabs.oss.neo4j.structure.Neo4JElementIdProvider;
 import com.steelbridgelabs.oss.neo4j.structure.Neo4JGraph;
 import com.steelbridgelabs.oss.neo4j.structure.Neo4JVertex;
 import com.steelbridgelabs.oss.neo4j.structure.providers.Neo4JNativeElementIdProvider;
+import hybrid.rdf.storage.client.Neo4jClient;
+import hybrid.rdf.storage.client.OntopClient;
+import hybrid.rdf.storage.client.ResultList;
 import hybrid.rdf.storage.config.Neo4jDataSourceConfig;
+import hybrid.rdf.storage.domain.dao.*;
+import hybrid.rdf.storage.domain.model.LongTripleTuple;
+import hybrid.rdf.storage.domain.model.NumberPropertyInfo;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.jena.atlas.lib.Bytes;
+import org.apache.jena.datatypes.xsd.XSDDatatype;
 import org.apache.jena.graph.Triple;
+import org.apache.jena.ontology.*;
 import org.apache.jena.query.*;
 import org.apache.jena.rdf.model.*;
+import org.apache.jena.rdf.model.impl.ResourceImpl;
 import org.apache.jena.riot.RDFDataMgr;
 import org.apache.jena.sparql.algebra.Algebra;
 import org.apache.jena.sparql.algebra.Op;
@@ -21,19 +31,27 @@ import org.apache.jena.sparql.core.Var;
 import org.apache.jena.sparql.core.VarExprList;
 import org.apache.jena.sparql.expr.Expr;
 import org.apache.jena.sparql.expr.ExprAggregator;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.sparql.SparqlToGremlinCompiler;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.bson.Document;
+import org.codelibs.minhash.MinHash;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+import redis.clients.jedis.Jedis;
 
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
 
@@ -45,15 +63,39 @@ public class Storage {
 
     private final Neo4jClient neo4jClient;
 
+    private final OntopClient ontopClient;
+
+    private final SpoDaoIRepo spoDaoIRepo;
+
+    private final SpoDaoSRepo spoDaoSRepo;
+
+    private final SubjectRepo subjectRepo;
+
+    private final ObjectRepo objectRepo;
+
+    private final PredictRepo predictRepo;
+
     @Autowired
     public Storage(
             Neo4jDataSourceConfig.CypherExecutor cypherExecutor,
             MongoCollection<Document> mongoCollection,
-            Neo4jClient neo4jClient
+            Neo4jClient neo4jClient,
+            OntopClient ontopClient,
+            SpoDaoIRepo spoDaoIRepo,
+            SpoDaoSRepo spoDaoSRepo,
+            SubjectRepo subjectRepo,
+            ObjectRepo objectRepo,
+            PredictRepo predictRepo
     ) {
         this.cypherExecutor = cypherExecutor;
         this.mongoCollection = mongoCollection;
         this.neo4jClient = neo4jClient;
+        this.ontopClient = ontopClient;
+        this.spoDaoIRepo = spoDaoIRepo;
+        this.spoDaoSRepo = spoDaoSRepo;
+        this.subjectRepo = subjectRepo;
+        this.objectRepo = objectRepo;
+        this.predictRepo = predictRepo;
     }
 
     public static String escapeQueryChars(String s) {
@@ -96,56 +138,44 @@ public class Storage {
 //            System.out.println(subject.toString() + " " + predicate.toString() + " " + object.toString());
 
             if (object instanceof Resource) {
-                try {
-                    String objectUri = ((Resource) object).getURI();
-                    cypherExecutor.execute(
-                            "CREATE p = ({name: '" + subject.getURI() + "'}) -[:`" + predicate.getURI() + "`]->" + "({name:'" + objectUri + "'})"
-                    );
+                try
+                {
+                    subjectRepo.save(subject.toString());
+                    objectRepo.save(object.toString());
+//                    predictRepo.save(predicate.toString());
                 } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            } else {
-                if(rdfPropertyMaps.get(subject) == null) {
-                    Document document = new Document("@id", subject.getURI());
-                    rdfPropertyMaps.put(subject, document);
+                    //..
                 }
 
-                Document document = new Document();
-                document.append("subject", subject.getURI());
-                document.append("predict", predicate.getURI());
-                document.append("object", object.toString());
-                documents.add(document);
+//                System.out.println(subject + " " + predicate + " " + object);
+//                try {
+//                    String objectUri = ((Resource) object).getURI();
+//                    cypherExecutor.execute(
+//                            "CREATE p = ({name: '" + subject.getURI() + "'}) -[:`" + predicate.getURI() + "`]->" + "({name:'" + objectUri + "'})"
+//                    );
+//                } catch (Exception e) {
+//                    e.printStackTrace();
+//                }
+            } else {
+                if(isInteger(object.toString())) {
+//                    spoDaoIRepo.save(subject.getURI(), predicate.getURI(), Integer.valueOf(object.toString()));
+                } else {
+//                    spoDaoSRepo.save(subject.getURI(), predicate.getURI(), object.toString());
+                }
+//                if(rdfPropertyMaps.get(subject) == null) {
+//                    Document document = new Document("@id", subject.getURI());
+//                    rdfPropertyMaps.put(subject, document);
+//                }
+//
+//                Document document = new Document();
+//                document.append("subject", subject.getURI());
+//                document.append("predict", predicate.getURI());
+//                document.append("object", object.toString());
+//                documents.add(document);
             }
         }
 
 //        System.out.println(mongoCollection.insertMany(documents));
-    }
-
-    @GetMapping("/query")
-    public void query() {
-        Model model = getModelFromPath("file:/home/ly/下载/politicianbill.owl");
-
-        String queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
-                "SELECT ?s \n" +
-                "WHERE { \n" +
-                "        ?s he:subject \"Energy\" .\n" +
-                "        ?s he:number \"683\"  .    \n" +
-                "}";
-        Query query = QueryFactory.create(queryString);
-
-        QueryExecution qexec = QueryExecutionFactory.create(query, model);
-        ResultSet results = qexec.execSelect();
-//System.out.println(results.getRowNumber());
-        while(results.hasNext()) {
-            QuerySolution soln = results.nextSolution();
-            System.out.println(soln);
-//            RDFNode x = soln.get("s");
-//            System.out.println(x);
-//            Resource r = soln.getResource("s");
-//            System.out.println(r);
-//            Literal l = soln.getLiteral("s");
-//            System.out.println(l);
-        }
     }
 
     @GetMapping("/query-neo4j")
@@ -188,13 +218,28 @@ public class Storage {
 
     @GetMapping("/query-neo4j-gremlin")
     public void sparqlGremlinTest() {
-        Query query = QueryFactory.create("select ?o where {<aaa> <bbb> ?o}");
+        String sparql = "PREFIX house: <http://www.house.gov/members#>\n" +
+                "PREFIX pb: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>" +
+                "select ?o where { house:P000422 pb:sponsoredBill ?o}";
+
+        Query query = QueryFactory.create(sparql);
         Op op = Algebra.compile(query);
 
-        neo4jClient.find(op);
+        System.out.println(neo4jClient.find(op));
 
 //        System.out.println((OpProject)divideVisitor.getNeoOp());
 //        System.out.println(op);
+    }
+
+    @GetMapping("/query-ontop")
+    public void queryOnTop() {
+        String sparql = "PREFIX voc: <http://example.org/voc#>\n" +
+                "SELECT * WHERE { voc:s2 voc:dfsdfp ?o } ";
+
+        Query query = QueryFactory.create(sparql);
+        Op op = Algebra.compile(query);
+
+        System.out.println(ontopClient.find(op));
     }
 
 //    @GetMapping("/parse")
@@ -249,12 +294,289 @@ public class Storage {
         query.getDatasetDescription(); // FROM / FROM NAMED bits
         query.getQueryPattern(); // The meat of the query, the WHERE bit...etc etc..
         Op op = Algebra.compile(query); // Get the algebra for th
-        DivideVisitor divideVisitor = new DivideVisitor();
-        OpWalker.walk(op, divideVisitor);
+//        DivideVisitor divideVisitor = new DivideVisitor();
+//        OpWalker.walk(op, divideVisitor);
+//        System.out.println(divideVisitor.getNeoOp());
+//        System.out.println(divideVisitor.getMongoOp());
 //        OpExecutor
 
 //        System.out.println((OpProject)divideVisitor.getNeoOp());
 //        System.out.println(op);
+    }
+
+    @GetMapping("/hybrid-query")
+    public void hybridQuery() {
+        OntModel ontModel = ModelFactory.createOntologyModel();
+        ontModel.read("/home/ly/下载/politicianbill.owl");
+
+        String queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
+                "SELECT ?s ?o \n" +
+                "WHERE { \n" +
+                "        ?s <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#sponsoredBill> ?o .\n" +
+                "        ?o he:number 683  .    \n" +
+                "}";
+        Query query = QueryFactory.create(queryString);
+        Op op = Algebra.compile(query);
+        DivideVisitor divideVisitor = new DivideVisitor(ontModel);
+        OpWalker.walk(op, divideVisitor);
+
+        System.out.println(divideVisitor.getNeoOp());
+        System.out.println(divideVisitor.getMongoOp());
+
+        ResultList neoList = neo4jClient.find(divideVisitor.getNeoOp());
+        ResultList mongoList = ontopClient.find(divideVisitor.getMongoOp());
+
+        System.out.println(neoList);
+        System.out.println(mongoList);
+
+        ResultList resultList = new ResultList();
+
+        for (Map<String, ?> stringMap : neoList) {
+            for (Map<String, ?> map : mongoList) {
+                if(stringMap.get("o").equals(map.get("o"))) {
+                    resultList.add(stringMap);
+                }
+            }
+        }
+
+        System.out.println(resultList);
+    }
+
+    @GetMapping("/query")
+    public void query() {
+        Model model = getModelFromPath("file:/home/ly/下载/politicianbill.owl");
+
+        String queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
+                "SELECT ?s ?o \n" +
+                "WHERE { \n" +
+                "        ?s he:sponsoredBill ?o .\n" +
+                "        ?s he:number \"683\"  .    \n" +
+                "}";
+        Query query = QueryFactory.create(queryString);
+
+        QueryExecution qexec = QueryExecutionFactory.create(query, model);
+        ResultSet results = qexec.execSelect();
+        //System.out.println(results.getRowNumber());
+        while(results.hasNext()) {
+            QuerySolution soln = results.nextSolution();
+            System.out.println(soln);
+            //            RDFNode x = soln.get("s");
+            //            System.out.println(x);
+            //            Resource r = soln.getResource("s");
+            //            System.out.println(r);
+            //            Literal l = soln.getLiteral("s");
+            //            System.out.println(l);
+        }
+    }
+
+    @GetMapping("/ontology")
+    public void processOntoloy() {
+        OntModel m = ModelFactory.createOntologyModel();
+        m.read("http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl");
+
+        DatatypeProperty numberTypeProperty = m.getDatatypeProperty("http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#number");
+        numberTypeProperty.addRange(new ResourceImpl(XSDDatatype.XSDinteger.getURI()));
+
+        DatatypeProperty congressTypeProperty = m.getDatatypeProperty("http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#congress");
+        congressTypeProperty.addRange(new ResourceImpl(XSDDatatype.XSDinteger.getURI()));
+
+        try {
+            BufferedWriter out = new BufferedWriter(new FileWriter("/home/ly/下载/politicianbill.owl"));
+            m.write(out);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @GetMapping("/minHashTest")
+    public void minHash() throws IOException {
+        Tokenizer tokenizer = new Tokenizer()
+        {
+            @Override
+            public boolean incrementToken() throws IOException
+            {
+                return false;
+            }
+        };
+
+        // The number of bits for each hash value.
+        int hashBit = 1;
+        // A base seed for hash functions.
+        int seed = 0;
+        // The number of hash functions.
+        int num = 128;
+        // Analyzer for 1-bit 128 hash with default Tokenizer (WhitespaceTokenizer).
+        Analyzer analyzer = MinHash.createAnalyzer(new WhitespaceTokenizer(), hashBit, seed, num);
+
+        String text = "a";
+
+        // Calculate a minhash value. The size is hashBit*num.
+        byte[] minhash = MinHash.calculate(analyzer, text);
+
+
+//        String text1 = "Fess is very powerful and easily deployable Search Server.";
+        String text1 = "k";
+        byte[] minhash1 = MinHash.calculate(analyzer, text1);
+        System.out.println(MinHash.compare(minhash, minhash1));
+    }
+
+    @GetMapping("/minHash1")
+    public void minHash1() {
+        // Initialize the hash function for an similarity error of 0.1
+        // For sets built from a dictionary of 5 items
+        info.debatty.java.lsh.MinHash minhash = new info.debatty.java.lsh.MinHash(0.05, 20);
+
+        // Sets can be defined as an vector of booleans:
+        // [1 0 0 1 0]
+        Set<Integer> set1 = new HashSet<>(Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8, 9, 10));
+        int[] sig1 = minhash.signature(set1);
+
+        // Or as a set of integers:
+        // set2 = [1 0 1 1 0]
+//        TreeSet<Integer> set2 = new TreeSet<Integer>();
+//        set2.add(0);
+//        set2.add(2);
+//        set2.add(3);
+        Set<Integer> set2 = new HashSet<>(Arrays.asList(10, 9, 8, 7, 6, 5, 4, 3, 2, 1));
+        int[] sig2 = minhash.signature(set2);
+
+        System.out.println("Signature similarity: " + minhash.similarity(sig1, sig2));
+        System.out.println("Real similarity (Jaccard index)" +
+                                   info.debatty.java.lsh.MinHash.jaccardIndex(set1, set2));
+    }
+
+    @GetMapping("/test-minhash")
+    public void testMinHash() {
+        OntModel ontModel = ModelFactory.createOntologyModel();
+        ontModel.read("/home/ly/下载/politicianbill.owl");
+        String p = "http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#sponsoredBy";
+
+        String queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
+                "PREFIX data: <http://swat.cse.lehigh.edu/resources/data/politicianbill.owl#>\n" +
+                "PREFIX rdfs: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\n" +
+                "SELECT ?s \n" +
+                "WHERE { \n" +
+                "        ?s <" + p + "> ?o .\n" +
+                "}";
+        Query query = QueryFactory.create(queryString);
+        Op op = Algebra.compile(query);
+        DivideVisitor divideVisitor = new DivideVisitor(ontModel);
+        OpWalker.walk(op, divideVisitor);
+
+        ResultList neoList = neo4jClient.find(divideVisitor.getNeoOp());
+
+        System.out.println(neoList);
+
+//        Set<Integer> set1 = new HashSet<>();
+//        for (Map<String, ?> stringMap : neoList) {
+//            set1.add(subjectRepo.findIdByName(stringMap.get("s").toString()));
+//        }
+//
+//
+//        queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
+//                "PREFIX rdfs: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\n" +
+//                "SELECT ?s \n" +
+//                "WHERE { \n" +
+//                "        ?s rdfs:type he:Senator .\n" +
+//                "}";
+//
+//        Query query2 = QueryFactory.create(queryString);
+//        Op op2 = Algebra.compile(query2);
+//        DivideVisitor divideVisitor2 = new DivideVisitor(ontModel);
+//        OpWalker.walk(op2, divideVisitor2);
+//
+//        ResultList neoList2 = neo4jClient.find(divideVisitor2.getNeoOp());
+//
+//        System.out.println(neoList2);
+//
+//        Set<Integer> set2 = new HashSet<>();
+//        for (Map<String, ?> stringMap : neoList2) {
+//            set2.add(subjectRepo.findIdByName(stringMap.get("s").toString()));
+//        }
+//
+//        System.out.println(set1);
+//        System.out.println(set2);
+//
+//        info.debatty.java.lsh.MinHash minhash = new info.debatty.java.lsh.MinHash(0.05, 10000);
+//
+//        // Sets can be defined as an vector of booleans:
+//        // [1 0 0 1 0]
+//        int[] sig1 = minhash.signature(set1);
+//
+//        System.out.println(sig1.length);
+//        // Or as a set of integers:
+//        // set2 = [1 0 1 1 0]
+//        //        TreeSet<Integer> set2 = new TreeSet<Integer>();
+//        //        set2.add(0);
+//        //        set2.add(2);
+//        //        set2.add(3);
+//        int[] sig2 = minhash.signature(set2);
+//        System.out.println(sig2.length);
+//        System.out.println("Signature similarity: " + minhash.similarity(sig1, sig2));
+//        System.out.println("Real similarity (Jaccard index)" +
+//                                   info.debatty.java.lsh.MinHash.jaccardIndex(set1, set2));
+    }
+
+    @GetMapping("/test-number")
+    public void testNumberProperty() {
+        NumberPropertyInfo numberPropertyInfo = spoDaoIRepo.getNumberPropertyInfo("http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#number");
+        System.out.println(numberPropertyInfo);
+
+        List<LongTripleTuple> tripleTuples = spoDaoIRepo.getNumberPropertySampleList(numberPropertyInfo.getTotalCount() / 100, "http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#number");
+
+        Set<Integer> ids = spoDaoIRepo.getSidByORange(tripleTuples.get(0).getRownum(), tripleTuples.get(1).getRownum(), "http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#number");
+        info.debatty.java.lsh.MinHash minhash = new info.debatty.java.lsh.MinHash(0.1, ids.size());
+
+        System.out.println(minhash.signature(ids).length);
+    }
+
+    @GetMapping("/generate-minHash")
+    public void generateMinHash() {
+        OntModel ontModel = ModelFactory.createOntologyModel();
+        ontModel.read("/home/ly/下载/politicianbill.owl");
+        String s = "http://swat.cse.lehigh.edu/resources/data/politicianbill.owl#h1128";
+        String p = "http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#sponsoredBy";
+
+        String queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
+                "PREFIX data: <http://swat.cse.lehigh.edu/resources/data/politicianbill.owl#>\n" +
+                "PREFIX rdfs: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\n" +
+                "SELECT ?s \n" +
+                "WHERE { \n" +
+                "        <" + s + "> <" + p + "> ?o .\n" +
+                "}";
+        Query query = QueryFactory.create(queryString);
+        Op op = Algebra.compile(query);
+        DivideVisitor divideVisitor = new DivideVisitor(ontModel);
+        OpWalker.walk(op, divideVisitor);
+
+        ResultList neoList = neo4jClient.find(divideVisitor.getNeoOp());
+
+        System.out.println(neoList);
+
+        Set<Integer> ids = new HashSet<>();
+        for (Map<String, ?> stringMap : neoList) {
+            ids.add(objectRepo.findIdByName(stringMap.get("o").toString()));
+        }
+
+        info.debatty.java.lsh.MinHash minhash = new info.debatty.java.lsh.MinHash(0.1, ids.size());
+
+        // Sets can be defined as an vector of booleans:
+        // [1 0 0 1 0]
+        int[] sig1 = minhash.signature(ids);
+
+        Jedis jedis = new Jedis("localhost", 6379);
+        String key = s + ":" + p;
+
+        System.out.println(sig1.length);
+
+//        for (int i : sig1)
+//        {
+//            Bytes.intToBytes(i);
+//            Bytes.getInt(Bytes.intToBytes(i));
+//            jedis.rpush(Bytes.string2bytes(key), Bytes.intToBytes(i));
+//        }
+
+        System.out.println(Bytes.getInt(jedis.lpop(Bytes.string2bytes(key))));
     }
 
     public static class DivideVisitor extends OpVisitorBase {
@@ -269,6 +591,12 @@ public class Storage {
         private Op neoOp;
 
         private Op mongoOp;
+
+        private OntModel ontModel;
+
+        public DivideVisitor(OntModel ontModel) {
+            this.ontModel = ontModel;
+        }
 
         @Override
         public void visit(OpBGP opBGP) {
@@ -293,14 +621,17 @@ public class Storage {
 
         public void visit(Triple triple, Boolean isNeo) {
             if(triple.getSubject().isVariable()) {
-                neoVars.add(new ExtendVar(
-                        Var.alloc(triple.getSubject()),
-                        0
-                ));
-                mongoVars.add(new ExtendVar(
-                        Var.alloc(triple.getSubject()),
-                        0
-                ));
+                if(isNeo) {
+                    neoVars.add(new ExtendVar(
+                            Var.alloc(triple.getSubject()),
+                            0
+                    ));
+                } else {
+                    mongoVars.add(new ExtendVar(
+                            Var.alloc(triple.getSubject()),
+                            0
+                    ));
+                }
             }
 
             if(triple.getPredicate().isVariable()) {
@@ -333,11 +664,12 @@ public class Storage {
         }
 
         public Boolean isNeoTriple(Triple triple) {
-            return triple.getPredicate().toString().equals("http://www.wikidata.org/prop/direct/P238");
+            return Objects.equals(ontModel.getDatatypeProperty(triple.getPredicate().getURI()), null);
+//            return triple.getPredicate().toString().equals("http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#sponsoredBill");
         }
 
         public Boolean isMongoTriple(Triple triple) {
-            return triple.getPredicate().toString().equals("http://www.w3.org/2000/01/rdf-schema#label");
+            return !Objects.equals(ontModel.getDatatypeProperty(triple.getPredicate().getURI()), null);
         }
 
         @Override
@@ -651,4 +983,21 @@ public class Storage {
         model.read(in, null);
         return model;
     }
+
+    public static boolean isInteger(String s) {
+        return isInteger(s,10);
+    }
+
+    public static boolean isInteger(String s, int radix) {
+        if(s.isEmpty()) return false;
+        for(int i = 0; i < s.length(); i++) {
+            if(i == 0 && s.charAt(i) == '-') {
+                if(s.length() == 1) return false;
+                else continue;
+            }
+            if(Character.digit(s.charAt(i),radix) < 0) return false;
+        }
+        return true;
+    }
 }
+

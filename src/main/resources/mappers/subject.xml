@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="hybrid.rdf.storage.domain.dao.SubjectRepo">
+    <insert id="save">
+        INSERT INTO subject
+            (s)
+        VALUE
+            (#{s})
+    </insert>
+
+    <select id="findIdByName" resultType="java.lang.Integer">
+        SELECT id FROM subject WHERE s=#{name}
+    </select>
+</mapper>

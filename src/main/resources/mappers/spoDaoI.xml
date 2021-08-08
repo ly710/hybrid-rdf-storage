@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="hybrid.rdf.storage.domain.dao.SpoDaoIRepo">
+    <insert id="save">
+        INSERT INTO spoi
+            (s, p, o)
+        VALUE
+            (#{s}, #{p}, #{o})
+    </insert>
+
+    <select id="getNumberPropertyInfo" resultType="hybrid.rdf.storage.domain.model.NumberPropertyInfo">
+        select count(*) as totalCount, max(o) as `max`, min(o) as `min` from spoi s where s.p = #{predict};
+    </select>
+
+    <select id="getNumberPropertySampleList" resultType="hybrid.rdf.storage.domain.model.LongTripleTuple">
+        select s, o, rownum from (
+            select s, o, rownum, mod(rownum, #{mod}) as modrow from (
+                select  (@rownum:=@rownum+1) as rownum, s.s as s, s.o as o
+                from spoi s, (SELECT @rownum:=0) rownum where s.p = #{predict}
+                order by o
+            ) ss
+            having modrow = 1
+        ) sss order by o;
+    </select>
+
+    <select id="getSidByORange" resultType="java.lang.Integer">
+        select so.id as id from (
+            select  (@rownum:=@rownum+1) as rownum, s.s as s, s.o as o
+            from spoi s, (SELECT @rownum:=0) rownum where s.p = #{predict}
+            order by o
+        ) ss
+        left join so on ss.s = so.s
+        where ss.rownum &gt;= #{startRow} and ss.rownum &lt; #{endRow}
+    </select>
+</mapper>
