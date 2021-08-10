@@ -31,6 +31,11 @@ import org.apache.jena.sparql.core.Var;
 import org.apache.jena.sparql.core.VarExprList;
 import org.apache.jena.sparql.expr.Expr;
 import org.apache.jena.sparql.expr.ExprAggregator;
+import org.apache.jena.sparql.lang.UpdateParserFactory;
+import org.apache.jena.sparql.modify.request.UpdateDataInsert;
+import org.apache.jena.sparql.modify.request.UpdateVisitorBase;
+import org.apache.jena.update.UpdateFactory;
+import org.apache.jena.update.UpdateRequest;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
@@ -294,11 +299,11 @@ public class Storage {
         query.getDatasetDescription(); // FROM / FROM NAMED bits
         query.getQueryPattern(); // The meat of the query, the WHERE bit...etc etc..
         Op op = Algebra.compile(query); // Get the algebra for th
+
 //        DivideVisitor divideVisitor = new DivideVisitor();
 //        OpWalker.walk(op, divideVisitor);
 //        System.out.println(divideVisitor.getNeoOp());
 //        System.out.println(divideVisitor.getMongoOp());
-//        OpExecutor
 
 //        System.out.println((OpProject)divideVisitor.getNeoOp());
 //        System.out.println(op);
@@ -309,37 +314,52 @@ public class Storage {
         OntModel ontModel = ModelFactory.createOntologyModel();
         ontModel.read("/home/ly/下载/politicianbill.owl");
 
-        String queryString = "PREFIX he: <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#>\n" +
-                "SELECT ?s ?o \n" +
-                "WHERE { \n" +
-                "        ?s <http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#sponsoredBill> ?o .\n" +
-                "        ?o he:number 683  .    \n" +
+        String queryString = "PREFIX : <http://books.example/>\n" +
+                "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#> \n" +
+                "INSERT DATA\n" +
+                "{ \n" +
+                "  :Tom :writesBook :a_new_book .\n" +
+                "  :a_new_book :price \"10\"^^xsd:integer .\n" +
                 "}";
-        Query query = QueryFactory.create(queryString);
-        Op op = Algebra.compile(query);
-        DivideVisitor divideVisitor = new DivideVisitor(ontModel);
-        OpWalker.walk(op, divideVisitor);
+//        Query query = QueryFactory.create(queryString);
+        UpdateRequest updates = UpdateFactory.create(queryString);
 
-        System.out.println(divideVisitor.getNeoOp());
-        System.out.println(divideVisitor.getMongoOp());
-
-        ResultList neoList = neo4jClient.find(divideVisitor.getNeoOp());
-        ResultList mongoList = ontopClient.find(divideVisitor.getMongoOp());
-
-        System.out.println(neoList);
-        System.out.println(mongoList);
-
-        ResultList resultList = new ResultList();
-
-        for (Map<String, ?> stringMap : neoList) {
-            for (Map<String, ?> map : mongoList) {
-                if(stringMap.get("o").equals(map.get("o"))) {
-                    resultList.add(stringMap);
-                }
+        class Visitor extends UpdateVisitorBase {
+            @Override
+            public void visit(UpdateDataInsert update)
+            {
+                System.out.println(update.getQuads().get(1).getObject().getLiteralDatatype());
             }
         }
 
-        System.out.println(resultList);
+        updates.getOperations().get(0).visit(new Visitor());
+        System.out.println(updates.getOperations());
+
+//        Op op = Algebra.compile(updates);
+//        System.out.println(op);
+//        DivideVisitor divideVisitor = new DivideVisitor(ontModel);
+//        OpWalker.walk(op, divideVisitor);
+//
+//        System.out.println(divideVisitor.getNeoOp());
+//        System.out.println(divideVisitor.getMongoOp());
+//
+//        ResultList neoList = neo4jClient.find(divideVisitor.getNeoOp());
+//        ResultList mongoList = ontopClient.find(divideVisitor.getMongoOp());
+//
+//        System.out.println(neoList);
+//        System.out.println(mongoList);
+//
+//        ResultList resultList = new ResultList();
+//
+//        for (Map<String, ?> stringMap : neoList) {
+//            for (Map<String, ?> map : mongoList) {
+//                if(stringMap.get("o").equals(map.get("o"))) {
+//                    resultList.add(stringMap);
+//                }
+//            }
+//        }
+//
+//        System.out.println(resultList);
     }
 
     @GetMapping("/query")
@@ -598,6 +618,8 @@ public class Storage {
             this.ontModel = ontModel;
         }
 
+        public DivideVisitor() {}
+
         @Override
         public void visit(OpBGP opBGP) {
             BasicPattern neoBasicPattern = new BasicPattern();
@@ -664,12 +686,15 @@ public class Storage {
         }
 
         public Boolean isNeoTriple(Triple triple) {
-            return Objects.equals(ontModel.getDatatypeProperty(triple.getPredicate().getURI()), null);
+//            return Objects.equals(ontModel.getDatatypeProperty(triple.getPredicate().getURI()), null);
 //            return triple.getPredicate().toString().equals("http://swat.cse.lehigh.edu/resources/onto/politicianbill.owl#sponsoredBill");
+            return triple.getPredicate().toString().equals("http://books.example/affiliates")
+                    || triple.getPredicate().toString().equals("http://books.example/writesBook");
         }
 
         public Boolean isMongoTriple(Triple triple) {
-            return !Objects.equals(ontModel.getDatatypeProperty(triple.getPredicate().getURI()), null);
+//            return !Objects.equals(ontModel.getDatatypeProperty(triple.getPredicate().getURI()), null);
+            return triple.getPredicate().toString().equals("http://books.example/price");
         }
 
         @Override
